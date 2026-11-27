@@ -1,5 +1,7 @@
 # ☕ 단체 음료 주문 (coffee-order)
 
+**라이브:** https://wjoehasa-eng.github.io/coffee-order/ · 관리자: https://wjoehasa-eng.github.io/coffee-order/?admin=1
+
 학교·팀 회의 때 **단체 음료 주문을 3단계로 오류 없이 취합하는 PWA**입니다.
 이름을 고르고 → 메뉴를 고르고 → 한 번 확인하면 끝. 관리자 화면에서는 누가 무엇을 골랐는지,
 무엇이 몇 잔인지, 누가 아직 안 골랐는지가 한 화면에 정리됩니다.
@@ -100,11 +102,12 @@ python3 tools/test_app.py
 
 ## 6. 배포 (GitHub Pages)
 
-1. 저장소를 만들고 이 폴더의 파일을 그대로 올립니다(개인정보·시트 주소는 들어 있지 않습니다).
-2. Settings → Pages → Branch `main` / root.
-3. `https://<아이디>.github.io/<저장소>/` 로 열립니다.
-   - 참여자: 위 주소 그대로
-   - 관리자: 위 주소 뒤에 `?admin=1`
-4. 처음 한 번 관리자 화면에서 명단을 넣고, (원하면) 시트를 연결한 뒤 **참여자 링크**를 단체방에 보내면 됩니다.
+지금 저장소는 **`gh-pages` 브랜치**를 게시 소스로 쓰고 있습니다(`https://wjoehasa-eng.github.io/coffee-order/`).
+
+- 고칠 때: `git add -A && git commit -m "..." && git push origin main` 뒤에 **한 번 더** `git push origin main:gh-pages`
+  (그래야 라이브에 반영됩니다. 웹앱을 고치면 `sw.js`의 캐시 이름도 함께 올려 주세요.)
+- Settings → Pages → Branch를 `main` / `(root)` 로 바꾸면 미러 푸시 없이 `main`만 올려도 됩니다.
+- 참여자에게는 위 라이브 주소를 그대로, 관리자는 주소 뒤에 `?admin=1`을 붙여 엽니다.
+- 처음 한 번 관리자 화면에서 명단을 넣고, (원하면) 시트를 연결한 뒤 **참여자 링크**를 단체방에 보내면 됩니다.
 
 > 앱 아이콘·서비스워커 캐시 이름(`coffee-order-v1.0.0`)은 화면을 고칠 때 함께 올려 주세요.
