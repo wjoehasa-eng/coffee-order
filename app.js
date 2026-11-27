@@ -1060,14 +1060,15 @@
 
   /* ── 관리자 화면 ──────────────────────────────────────── */
   function adminHTML() {
-    var tabs = [['stats', '주문 현황'], ['roster', '명단'], ['menu', '메뉴판'], ['round', '회차·설정']];
+    var tabs = [['stats', '주문 현황'], ['menu', '메뉴판'], ['round', '회차·설정']];
     var body = S.tab === 'roster' ? rosterHTML()
       : S.tab === 'menu' ? menuEditorHTML()
       : S.tab === 'round' ? roundHTML()
       : statsHTML();
     return bannerHTML(true) +
       '<div class="tabs">' + tabs.map(function (t) {
-        return '<button class="tab' + (S.tab === t[0] ? ' on' : '') + '" data-act="tab" data-tab="' + t[0] + '">' + t[1] + '</button>';
+        var on = S.tab === t[0] || (t[0] === 'round' && S.tab === 'roster');
+        return '<button class="tab' + (on ? ' on' : '') + '" data-act="tab" data-tab="' + t[0] + '">' + t[1] + '</button>';
       }).join('') + '</div>' + body;
   }
 
@@ -1134,7 +1135,8 @@
 
   function rosterHTML() {
     var c = cfg();
-    return '<div class="card">' +
+    return '<div style="margin-bottom:10px"><button class="btn xs ghost" data-act="tab" data-tab="round">‹ 회차·설정으로 돌아가기</button></div>' +
+      '<div class="card">' +
         '<div class="kv"><span class="k">등록된 이름</span><span class="v">' + c.roster.length + '명</span></div>' +
         '<div class="chips" style="margin-top:12px">' +
           (c.roster.length ? c.roster.map(function (n) {
@@ -1223,7 +1225,8 @@
   function roundHTML() {
     var c = cfg();
     var hist = (S.data.history || []).slice(0, 10);
-    return '<div class="card">' +
+    return '<div class="card"><button class="btn ghost" data-act="tab" data-tab="roster">👥 명단 관리 (' + c.roster.length + '명)</button></div>' +
+      '<div class="card">' +
         '<div class="kv"><span class="k">현재 회차</span><span class="v">' + esc(c.roundName) + '</span></div>' +
         '<div class="kv"><span class="k">상태</span><span class="v">' + (c.status === 'open' ? '주문 받는 중' : '마감됨') + '</span></div>' +
         '<div class="kv"><span class="k">주문</span><span class="v">' + orders().length + '건</span></div>' +
