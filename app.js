@@ -1480,7 +1480,7 @@
     return location.origin + location.pathname.replace(/(?:index|admin)\.html$/, '');
   }
   function participantLink() {
-    return pageBase() + (S.sheetUrl ? '#s=' + encodeURIComponent(S.sheetUrl) : '');
+    return pageBase() + '?v=2' + (S.sheetUrl ? '#s=' + encodeURIComponent(S.sheetUrl) : '');
   }
   function adminLink() {
     return pageBase() + 'admin.html' + (S.sheetUrl ? '#s=' + encodeURIComponent(S.sheetUrl) : '');
