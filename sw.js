@@ -1,12 +1,14 @@
 /* 단체 음료 주문 — 오프라인 캐시 (앱 껍데기만 캐시, 주문 데이터는 localStorage/시트) */
-var CACHE = 'coffee-order-v1.1.1';
+var CACHE = 'coffee-order-v1.1.2';
 var ASSETS = [
   './',
   'index.html',
-  'styles.css?v=1.1.1',
-  'menus.js?v=1.1.1',
-  'app.js?v=1.1.1',
+  'admin.html',
+  'styles.css?v=1.1.2',
+  'menus.js?v=1.1.2',
+  'app.js?v=1.1.2',
   'manifest.webmanifest',
+  'admin.webmanifest',
   'icon-192.png',
   'icon-512.png',
   'icons/icon-192.png',

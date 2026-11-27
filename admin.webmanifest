@@ -1,0 +1,18 @@
+{
+  "name": "단체 음료 주문 (관리자)",
+  "short_name": "음료 관리",
+  "description": "단체 음료 주문 개설·명단·현황 관리용 관리자 앱",
+  "lang": "ko",
+  "start_url": "./admin.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F2F4F6",
+  "theme_color": "#F2F4F6",
+  "categories": ["productivity", "food"],
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

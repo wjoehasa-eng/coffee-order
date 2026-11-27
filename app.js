@@ -1881,10 +1881,10 @@
     try { stored = localStorage.getItem(LS_SHEET) || ''; } catch (e) {}
     S.sheetUrl = String(p.s || stored || '').trim();
     if (S.sheetUrl) { try { localStorage.setItem(LS_SHEET, S.sheetUrl); } catch (e) {} }
-    if (p.admin === '1' || p.admin === 'true') {
+    if (window.__COFFEE_ADMIN_ENTRY || p.admin === '1' || p.admin === 'true') {
       try { localStorage.setItem(LS_ADMIN, '1'); } catch (e) {}
     }
-    S.mode = (p.admin === '1' || p.admin === 'true')
+    S.mode = (window.__COFFEE_ADMIN_ENTRY || p.admin === '1' || p.admin === 'true')
       ? 'admin'
       : ((p.admin === '0' || p.admin === 'false') ? 'user' : (isRememberedAdmin() ? 'admin' : 'user'));
     S.fbMode = isFbUrl(S.sheetUrl);
