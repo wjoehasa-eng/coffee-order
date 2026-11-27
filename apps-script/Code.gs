@@ -76,7 +76,7 @@ function handle_(req, callback) {
   var action = String((req && req.action) || 'ping');
   try {
     if (action === 'ping') return json_(ping_(), callback);
-    if (action === 'load') return json_(load_(), callback);
+    if (action === 'load') return json_(load_(req), callback);
     if (action === 'submit') return json_(withLock_(function () { return submit_(req); }), callback);
     if (action === 'remove') return json_(withLock_(function () { return remove_(req); }), callback);
     if (action === 'removeMissing') return json_(withLock_(function () { return removeMissing_(); }), callback);
@@ -84,6 +84,7 @@ function handle_(req, callback) {
     if (action === 'roster') return json_(withLock_(function () { return roster_(req); }), callback);
     if (action === 'menus') return json_(withLock_(function () { return menus_(req); }), callback);
     if (action === 'newRound') return json_(withLock_(function () { return newRound_(req); }), callback);
+    if (action === 'deleteHistory') return json_(withLock_(function () { return deleteHistory_(req); }), callback);
     return json_({ ok: false, error: '알 수 없는 action: ' + action }, callback);
   } catch (err) {
     return json_({ ok: false, error: String((err && err.message) || err) }, callback);
@@ -111,7 +112,7 @@ function json_(obj, callback) {
 }
 
 function ping_() {
-  return { ok: true, app: 'coffee-order', version: 1, time: nowStr_(), spreadsheet: !!ss_() };
+  return { ok: true, app: 'coffee-order', version: 2, time: nowStr_(), spreadsheet: !!ss_() };
 }
 
 /* ── 시트 준비 ────────────────────────────────────────── */
@@ -283,22 +284,25 @@ function readHistory_(limit) {
 }
 
 /* ── load ─────────────────────────────────────────────── */
-function load_() {
+function load_(req) {
   var cfg = readConfig_();
   if (!cfg.roundId) {
     /* 완전히 빈 시트면 기본 회차를 만들어 준다 (setup 을 안 돌린 경우 대비) */
     setup();
     cfg = readConfig_();
   }
-  return {
+  /* lite=1 — 참여자 화면은 지난 회차가 필요 없어 그 몫을 빼고 내려준다 */
+  var lite = String((req && req.lite) || '') === '1' || (req && req.lite === true);
+  var out = {
     ok: true,
     app: 'coffee-order',
     config: cfg,
     orders: readOrders_(cfg.roundId),
     menus: readMenus_(),
-    history: readHistory_(20),
     time: nowStr_()
   };
+  if (!lite) out.history = readHistory_(20);
+  return out;
 }
 
 /* ── submit ───────────────────────────────────────────── */
@@ -482,6 +486,23 @@ function newRound_(req) {
   };
   writeConfig_(next);
   return { ok: true, archived: archived, config: next };
+}
+
+/* ── deleteHistory ────────────────────────────────────── */
+/* 지난 회차 한 건을 History 탭에서 지운다 (roundId 기준) */
+function deleteHistory_(req) {
+  var roundId = String((req && req.roundId) || '').trim();
+  if (!roundId) return { ok: false, error: '회차가 없습니다.' };
+  var sh = sheet_(SH_HISTORY, H_HISTORY);
+  var last = sh.getLastRow();
+  if (last < 2) return { ok: true, removed: 0 };
+  var rows = sh.getRange(2, 1, last - 1, 1).getValues();
+  var doomed = [];
+  for (var i = rows.length - 1; i >= 0; i--) {
+    if (String(rows[i][0]) === roundId) doomed.push(i + 2);
+  }
+  doomed.forEach(function (r) { sh.deleteRow(r); });
+  return { ok: true, removed: doomed.length };
 }
 
 /* ── 백업 ─────────────────────────────────────────────── */

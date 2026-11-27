@@ -55,7 +55,7 @@ a { color: inherit; }
 .app {
   max-width: 520px;
   margin: 0 auto;
-  padding: 0 16px 56px;
+  padding: 0 16px 44px;
 }
 .app.is-admin { max-width: 760px; }
 
@@ -130,7 +130,7 @@ a { color: inherit; }
   letter-spacing: -0.02em;
 }
 .sec-title {
-  margin: 26px 2px 10px;
+  margin: 22px 2px 8px;
   font-size: 15px;
   font-weight: 800;
   letter-spacing: -0.03em;
@@ -153,11 +153,11 @@ a { color: inherit; }
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 16px 18px;
+  padding: 14px 16px;
   border-radius: var(--r-lg);
   background: var(--card);
   box-shadow: var(--shadow);
-  margin-bottom: 18px;
+  margin-bottom: 14px;
 }
 .banner-body { min-width: 0; flex: 1; }
 .banner-round {
@@ -434,32 +434,6 @@ textarea.input {
 .t-both { background: #F2F4F6; color: var(--ink-2); }
 .chev { color: var(--gray-2); font-size: 15px; }
 
-.direct {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 12px;
-  padding: 16px 18px;
-  border-radius: var(--r-lg);
-  background: #fff;
-  box-shadow: var(--shadow);
-  width: 100%;
-  text-align: left;
-}
-.direct:active { background: #FAFBFC; }
-.direct .di-ic {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 38px;
-  height: 38px;
-  border-radius: 12px;
-  background: var(--blue-weak);
-  font-size: 17px;
-}
-.direct .di-name { font-size: 15px; font-weight: 800; letter-spacing: -0.03em; }
-.direct .di-sub { font-size: 12px; color: var(--gray); font-weight: 600; }
-
 /* ── 확인 화면 ────────────────────────────────────────── */
 .summary {
   display: flex;
@@ -659,6 +633,18 @@ textarea.input {
 }
 .empty .e-ic { display: block; font-size: 24px; margin-bottom: 6px; }
 
+/* ── 첫 로딩(저장분 없음) — 빈 화면 대신 명단 자리를 보여 줍니다 ── */
+.sk-line, .sk-chip, .sk-pill { background: #E9ECEF; animation: pulse 1.4s infinite; }
+.sk-banner { box-shadow: none; }
+.sk-line { height: 12px; margin-top: 8px; border-radius: 6px; }
+.sk-line.w40 { width: 40%; }
+.sk-line.w60 { width: 60%; }
+.sk-line.w80 { width: 80%; }
+.sk-line.tall { height: 20px; margin-top: 4px; }
+.sk-pill { flex: 0 0 auto; width: 54px; height: 26px; border-radius: 999px; }
+.sk-chip { height: 62px; border-radius: var(--r-md); }
+.sk-note { margin: 16px 0 0; text-align: center; font-size: 13px; font-weight: 700; color: var(--gray); }
+
 /* ── 하단 시트 ────────────────────────────────────────── */
 .sheet-wrap {
   position: fixed;
@@ -724,17 +710,6 @@ textarea.input {
 .seg button.on { background: var(--blue); color: #fff; }
 .seg button.on.hot { background: #E5484D; }
 .seg button.on.ice { background: #2F6FD0; }
-.cnote-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.cnote {
-  height: 34px;
-  padding: 0 12px;
-  border-radius: 999px;
-  background: var(--line-2);
-  color: var(--ink-2);
-  font-size: 12.5px;
-  font-weight: 700;
-}
-.cnote.on { background: var(--blue-weak); color: var(--blue-dark); box-shadow: inset 0 0 0 1.5px var(--blue); }
 .item-hero {
   margin: 0 0 16px;
   padding: 14px 16px;

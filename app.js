@@ -11,10 +11,15 @@
 (function () {
   'use strict';
 
-  var APP_VERSION = '1.0.0';
+  var APP_VERSION = '1.1.0';
   var LS_DATA = 'coffee-order-v1';
   var LS_SHEET = 'coffee-order-sheet';
+  var LS_SRC = 'coffee-order-src';       /* 저장분이 어느 채널의 것인지 */
   var LS_LASTTEMP = 'coffee-order-lasttemp';
+
+  /* 쓰기 응답 본문이 길어 GET(JSONP) 주소로는 부담스러운 요청 */
+  var LONG_ACTIONS = { roster: 1, menus: 1 };
+  var FB_HOST = /\.(firebasedatabase\.app|firebaseio\.com)(\/|$)/i;
 
   /* ── 작은 도구들 ───────────────────────────────────────── */
   function $(id) { return document.getElementById(id); }
@@ -49,13 +54,18 @@
     sheetUrl: '',
     connected: false,
     busy: false,
+    cached: false,                /* localStorage에 저장분이 있는지 */
+    fbMode: false,                /* Firebase 실시간 DB 모드 */
+    raw: null,                    /* Firebase 원본 스냅샷 */
+    es: null,                     /* EventSource */
+    streamOn: false,
+    lastBtn: null,                /* 방금 누른 버튼(저장 중… 표시용) */
     nq: '',                       /* 이름 검색어 */
     mq: '',                       /* 메뉴 검색어 */
     cat: 'all',
     editorBrand: '',
     pickItem: null,
     pickTemp: '',
-    pickChips: [],
     editMenuId: '',
     editMenuTemp: '',
     editTemp: '',
@@ -84,6 +94,8 @@
   /* ── 로컬 저장소 ───────────────────────────────────────── */
   function readLocal() {
     try {
+      var src = localStorage.getItem(LS_SRC) || '';
+      if (S.sheetUrl && src && src !== S.sheetUrl) return null;   /* 다른 채널의 저장분 */
       var raw = localStorage.getItem(LS_DATA);
       if (!raw) return null;
       var d = JSON.parse(raw);
@@ -96,7 +108,10 @@
     } catch (e) { return null; }
   }
   function saveLocal() {
-    try { localStorage.setItem(LS_DATA, JSON.stringify(S.data)); } catch (e) {}
+    try {
+      localStorage.setItem(LS_DATA, JSON.stringify(S.data));
+      localStorage.setItem(LS_SRC, S.sheetUrl || '');
+    } catch (e) {}
   }
 
   /* ── 로컬 API (시트 없이도 완전히 동작) ─────────────────── */
@@ -216,6 +231,15 @@
       return { ok: true, archived: archived ? archived.total : 0, config: clone(d.config) };
     }
 
+    if (action === 'deleteHistory') {
+      var rid = String(p.roundId || '');
+      if (!rid) return { ok: false, error: '회차가 없습니다.' };
+      var beforeDel = (d.history || []).length;
+      d.history = (d.history || []).filter(function (h) { return h.roundId !== rid; });
+      saveLocal();
+      return { ok: true, removed: beforeDel - d.history.length };
+    }
+
     return { ok: false, error: '알 수 없는 action: ' + action };
   }
 
@@ -262,44 +286,443 @@
       config: res.config,
       orders: res.orders || [],
       menus: res.menus || {},
-      history: res.history || []
+      /* lite 응답에는 history가 없습니다 — 관리자 화면이면 이전 값을 그대로 둡니다 */
+      history: res.history || (S.data && S.data.history) || []
     };
     S.data.config.roster = S.data.config.roster || [];
     S.connected = true;
+    /* 다음 방문부터는 시트를 기다리지 않고 이 저장분을 바로 그립니다 */
+    saveLocal();
+    S.cached = true;
   }
 
-  function sheetLoad() {
-    return jsonp(S.sheetUrl, { action: 'load' }).then(function (res) {
+  function sheetLoad(lite) {
+    /* 참여자 화면은 지난 회차(history)가 필요 없어 그 부분을 빼고 받습니다 */
+    var params = { action: 'load' };
+    if (lite == null ? S.mode !== 'admin' : lite) params.lite = '1';
+    return jsonp(S.sheetUrl, params).then(function (res) {
       applyRemote(res);
       return res;
     });
   }
 
-  function sheetApi(action, p) {
-    if (action === 'load') return sheetLoad();
-    return postSheet(action, p).then(function () { return sheetLoad(); });
+  /* 쓰기 한 건 — 응답까지 필요한 만큼만 기다립니다(왕복 1회)
+     · 짧은 요청: doGet(JSONP) 한 번으로 결과(ok/closed)까지 받는다
+     · 긴 요청(roster·menus): POST는 응답을 읽을 수 없어 보내고 바로 화면에 반영한 뒤 동기화 */
+  function sheetWrite(action, p) {
+    if (LONG_ACTIONS[action]) {
+      return postSheet(action, p).then(function () { return { ok: true, optimistic: true }; });
+    }
+    var params = { action: action };
+    Object.keys(p || {}).forEach(function (k) {
+      var v = p[k];
+      params[k] = (v && typeof v === 'object') ? JSON.stringify(v) : v;
+    });
+    return jsonp(S.sheetUrl, params);
   }
 
   /* ── 공통 api ─────────────────────────────────────────── */
-  function api(action, p) {
-    return S.sheetUrl ? sheetApi(action, p) : localApi(action, p);
+  function api(action, p, pre) {
+    if (S.fbMode) return action === 'load' ? fbLoad() : fbWrite(action, p, pre);
+    if (action === 'load') return S.sheetUrl ? sheetLoad() : localApi('load');
+    return S.sheetUrl ? sheetWrite(action, p) : localApi(action, p);
   }
 
-  function mutate(action, p) {
+  function backendLoad() {
+    return S.fbMode ? fbLoad() : sheetLoad();
+  }
+
+  /* ══ Firebase 실시간 DB ══════════════════════════════════
+   * 주소: https://<db>.firebasedatabase.app/ch/<key>
+   *   <base>/config            회차·브랜드·상태·명단
+   *   <base>/orders/<roundId>/<사람키>   사람별 주문 (키가 달라 동시에 써도 안 겹침)
+   *   <base>/menus/<brand>     메뉴 수정
+   *   <base>/history/<roundId>   지난 회차
+   * 읽기는 <base>.json 한 번, 이후는 EventSource 로 실시간 반영.
+   */
+  function isFbUrl(u) {
+    u = String(u || '');
+    /* 실서비스: https://<db>.firebasedatabase.app/ch/<key>  ·  로컬 시험용: …/ch/<key> */
+    return FB_HOST.test(u) || /\/ch\/[A-Za-z0-9_\-]{6,}\/?$/.test(u);
+  }
+
+  function safeKey(s) {
+    /* Firebase 키에는 . $ # [ ] / 를 쓸 수 없고, 스트림 경로에서는 ~ 도 피한다 */
+    return encodeURIComponent(String(s == null ? '' : s))
+      .replace(/\./g, '%2E').replace(/~/g, '%7E');
+  }
+
+  function fbBase() {
+    return String(S.sheetUrl || '').trim().replace(/\/+$/, '');
+  }
+
+  function fbUrl(path) {
+    var b = fbBase();
+    if (!path || path === '.json') return b + '.json';
+    return b + '/' + path;
+  }
+
+  function fbReq(method, path, body) {
+    var ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    var opts = { method: method, cache: 'no-store' };
+    if (ctl) opts.signal = ctl.signal;
+    var timer = setTimeout(function () { if (ctl) ctl.abort(); }, 12000);
+    if (body !== undefined) {
+      opts.headers = { 'Content-Type': 'application/json' };
+      opts.body = JSON.stringify(body);
+    }
+    return fetch(fbUrl(path), opts).then(function (r) {
+      clearTimeout(timer);
+      if (!r.ok) throw new Error('연결 실패(' + r.status + ')');
+      return r.text().then(function (t) {
+        try { return JSON.parse(t); } catch (e) { return null; }
+      });
+    }, function (e) { clearTimeout(timer); throw e; });
+  }
+
+  /* Firebase 원본 → 화면 상태 */
+  function applyFb(raw) {
+    raw = raw || {};
+    S.raw = raw;
+    var cin = raw.config || {};
+    var rid = String(cin.roundId || '');
+    var bag = (raw.orders && rid && raw.orders[rid]) || {};
+    var list = Object.keys(bag).map(function (k) {
+      var o = bag[k];
+      if (!o || typeof o !== 'object') return null;
+      return {
+        name: String(o.name || ''), menu: String(o.menu || ''), temp: String(o.temp || ''),
+        note: String(o.note || ''), ts: String(o.ts || '')
+      };
+    }).filter(function (o) { return o && o.name; });
+
+    var hist = Object.keys(raw.history || {}).map(function (k) {
+      var h = raw.history[k] || {};
+      return {
+        roundId: String(h.roundId || k), roundName: String(h.roundName || ''),
+        brand: String(h.brand || 'compose'), closedAt: String(h.closedAt || ''),
+        total: Number(h.total || 0), orders: h.orders || []
+      };
+    }).sort(function (a, b) { return String(b.closedAt).localeCompare(String(a.closedAt)); });
+
+    S.data = {
+      config: {
+        roundId: rid || newId(),
+        roundName: String(cin.roundName || ''),
+        brand: String(cin.brand || 'compose'),
+        status: String(cin.status || 'open'),
+        roster: Array.isArray(cin.roster) ? cin.roster.map(String) : [],
+        updatedAt: String(cin.updatedAt || '')
+      },
+      orders: list,
+      menus: raw.menus || {},
+      history: hist
+    };
+    S.connected = true;
+    saveLocal();
+    S.cached = true;
+  }
+
+  function fbLoad() {
+    return fetch(fbUrl('.json'), { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error('연결 실패(' + r.status + ')');
+      return r.json();
+    }).then(function (raw) {
+      applyFb(raw);
+      startStream();
+      return raw;
+    });
+  }
+
+  /* 스트림 이벤트의 path/data 를 원본에 적용 (전체 스냅샷 없이 가볍게) */
+  function segsOf(path) {
+    return String(path || '/').split('/').filter(function (s) { return s.length > 0; })
+      .map(function (s) { return s.replace(/~1/g, '/').replace(/~0/g, '~'); });
+  }
+
+  function applyPatch(root, path, data) {
+    var segs = segsOf(path);
+    if (!segs.length) return data === null || data === undefined ? {} : data;
+    var cur = root || {};
+    for (var i = 0; i < segs.length - 1; i++) {
+      if (!cur[segs[i]] || typeof cur[segs[i]] !== 'object') cur[segs[i]] = {};
+      cur = cur[segs[i]];
+    }
+    var last = segs[segs.length - 1];
+    if (data === null || data === undefined) delete cur[last];
+    else cur[last] = data;
+    return root;
+  }
+
+  function nodeAt(root, path) {
+    var cur = root || {};
+    segsOf(path).forEach(function (s) {
+      if (!cur[s] || typeof cur[s] !== 'object') cur[s] = {};
+      cur = cur[s];
+    });
+    return cur;
+  }
+
+  /* Firebase 의 patch 이벤트 — 그 자리에서 자식만 합치고 null 은 삭제 */
+  function mergeDeep(dst, src) {
+    Object.keys(src || {}).forEach(function (k) {
+      var v = src[k];
+      if (v === null) delete dst[k];
+      else if (v && typeof v === 'object' && !Array.isArray(v)) {
+        if (!dst[k] || typeof dst[k] !== 'object' || Array.isArray(dst[k])) dst[k] = {};
+        mergeDeep(dst[k], v);
+      } else dst[k] = v;
+    });
+    return dst;
+  }
+
+  function startStream() {
+    if (!S.fbMode || !window.EventSource || S.es) return;
+    try {
+      var es = new EventSource(fbUrl('.json'));
+      S.es = es;
+      es.onopen = function () { S.streamOn = true; };
+
+      function receive(ev, isPatch) {
+        if (!ev || !ev.data) return;
+        var msg;
+        try { msg = JSON.parse(ev.data); } catch (e) { return; }
+        if (!msg || msg.path === undefined) return;
+        S.streamOn = true;
+        var before = S.data ? JSON.stringify(S.data) : '';
+        if (isPatch) mergeDeep(nodeAt(S.raw || {}, msg.path), msg.data);
+        else S.raw = applyPatch(S.raw || {}, msg.path, msg.data);
+        applyFb(S.raw);
+        if (S.data && JSON.stringify(S.data) !== before) renderSoon(60);
+      }
+      /* Firebase 스트림은 event: put / patch 로 옵니다 (기본 message 가 아님) */
+      es.addEventListener('put', function (ev) { receive(ev, false); });
+      es.addEventListener('patch', function (ev) { receive(ev, true); });
+      es.onmessage = function (ev) { receive(ev, false); };
+      es.onerror = function () { S.streamOn = false; };
+    } catch (e) { /* 스트림이 안 되면 쓰기 후 다시 읽기로 충분 */ }
+  }
+
+  function renderSoon(delay) {
+    clearTimeout(renderSoon._t);
+    renderSoon._t = setTimeout(function () {
+      var ae = document.activeElement;
+      var typing = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT');
+      if (typing || !$('sheet').hidden) { renderSoon(700); return; }   /* 입력 중이면 미룸 */
+      render();
+    }, delay == null ? 80 : delay);
+  }
+
+  /* pre = 이 요청 직전의 상태(낙관 반영 전). 새 회차·정리처럼 '요청 전 상태'가 필요한 일에 씁니다 */
+  function fbWrite(action, p, pre) {
+    p = p || {};
+    var c = (pre && pre.config) ? pre.config : S.data.config;
+    var rid = String(c.roundId || '');
+    var curOrders = (pre && pre.orders) ? pre.orders : orders();
+
+    if (action === 'submit') {
+      if (c.status !== 'open') return Promise.resolve({ ok: false, error: 'closed' });
+      var name = String(p.name || '').trim();
+      var menu = String(p.menu || '').trim();
+      if (!name) return Promise.resolve({ ok: false, error: '이름이 없습니다.' });
+      if (!menu) return Promise.resolve({ ok: false, error: '메뉴가 없습니다.' });
+      var order = {
+        name: name, menu: menu.slice(0, 60), temp: String(p.temp || '').slice(0, 4),
+        note: String(p.note || '').slice(0, 100), ts: nowISO()
+      };
+      return fbReq('PUT', 'orders/' + safeKey(rid) + '/' + safeKey(name) + '.json', order)
+        .then(function () { return { ok: true, order: order }; });
+    }
+
+    if (action === 'remove') {
+      return fbReq('DELETE', 'orders/' + safeKey(rid) + '/' + safeKey(p.name) + '.json')
+        .then(function () { return { ok: true }; });
+    }
+
+    if (action === 'removeMissing') {
+      var set = {};
+      (c.roster || []).forEach(function (n) { set[n] = 1; });
+      var gone = curOrders.filter(function (o) { return !set[o.name]; });
+      if (!gone.length) return Promise.resolve({ ok: true, removed: 0 });
+      var drop = { orders: {} };
+      drop.orders[rid] = {};
+      gone.forEach(function (o) { drop.orders[rid][safeKey(o.name)] = null; });
+      return fbReq('PATCH', '.json', drop).then(function () { return { ok: true, removed: gone.length }; });
+    }
+
+    if (action === 'config') {
+      var patch = {};
+      var src = p.patch || {};
+      ['roundName', 'brand', 'status'].forEach(function (k) {
+        if (src[k] != null && src[k] !== '') patch[k] = String(src[k]);
+      });
+      if (src.roundId) patch.roundId = String(src.roundId);
+      patch.updatedAt = nowISO();
+      return fbReq('PATCH', 'config.json', patch).then(function () {
+        return { ok: true, config: Object.assign({}, c, patch) };
+      });
+    }
+
+    if (action === 'roster') {
+      var seen = {};
+      var clean = (p.roster || []).map(function (n) { return String(n).trim(); })
+        .filter(function (n) {
+          if (!n || n.length > 20 || seen[n]) return false;
+          seen[n] = 1; return true;
+        });
+      if (!clean.length && (c.roster || []).length) {
+        return Promise.resolve({ ok: false, error: '빈 명단으로 덮어쓰기를 차단했습니다.' });
+      }
+      return fbReq('PUT', 'config/roster.json', clean).then(function () {
+        return { ok: true, roster: clean };
+      });
+    }
+
+    if (action === 'menus') {
+      var brand = String(p.brand || '');
+      if (!brand) return Promise.resolve({ ok: false, error: '브랜드가 없습니다.' });
+      var ov = p.ov || { removed: [], renamed: {}, added: [] };
+      return fbReq('PUT', 'menus/' + safeKey(brand) + '.json', ov).then(function () {
+        return { ok: true, ov: ov };
+      });
+    }
+
+    if (action === 'newRound') {
+      var cur = curOrders;
+      var nextId = newId();
+      var nextCfg = {
+        roundId: nextId,
+        roundName: String(p.roundName || (todayMD() + ' ' + brandName(p.brand || c.brand))).slice(0, 40),
+        brand: String(p.brand || c.brand),
+        status: 'open',
+        roster: c.roster || [],
+        updatedAt: nowISO()
+      };
+      var mv = { config: nextCfg };
+      if (cur.length) {
+        mv.history = {};
+        mv.history[rid] = {
+          roundId: rid, roundName: c.roundName, brand: c.brand,
+          closedAt: nowISO(), total: cur.length, orders: cur
+        };
+        mv.orders = {};
+        mv.orders[rid] = null;      /* 이번 회차 주문만 비우기 */
+      }
+      /* 한 번의 PATCH 로 보관·비우기·새 회차를 함께 처리 */
+      return fbReq('PATCH', '.json', mv).then(function () {
+        return { ok: true, archived: cur.length, config: nextCfg };
+      });
+    }
+
+    if (action === 'deleteHistory') {
+      var hrid = String(p.roundId || '');
+      if (!hrid) return Promise.resolve({ ok: false, error: '회차가 없습니다.' });
+      return fbReq('DELETE', 'history/' + safeKey(hrid) + '.json').then(function () {
+        return { ok: true, removed: 1 };
+      });
+    }
+
+    return Promise.resolve({ ok: false, error: '알 수 없는 action: ' + action });
+  }
+
+  /* ── 버튼 상태·오류 문구 ───────────────────────────────── */
+  function setBtnBusy(el, label) {
+    if (!el || !el.getAttribute || !document.body.contains(el)) return function () {};
+    var html = el.innerHTML;
+    var wasDisabled = el.disabled;
+    el.disabled = true;
+    el.setAttribute('aria-busy', 'true');
+    el.textContent = label;
+    return function () {
+      if (!document.body.contains(el)) return;
+      el.disabled = wasDisabled;
+      el.removeAttribute('aria-busy');
+      el.innerHTML = html;
+    };
+  }
+
+  /* 다시 그린 뒤에도 같은 버튼을 찾아 '저장 중…'을 이어서 보여 주려고 */
+  function sameButton(el, act) {
+    if (!el || !act) return null;
+    var all = document.querySelectorAll('[data-act="' + act + '"]');
+    var nm = el.getAttribute('data-name');
+    var id = el.getAttribute('data-id');
+    for (var i = 0; i < all.length; i++) {
+      var b = all[i];
+      if (nm != null && b.getAttribute('data-name') !== nm) continue;
+      if (id != null && b.getAttribute('data-id') !== id) continue;
+      return b;
+    }
+    return null;
+  }
+
+  function errorText(m) {
+    if (m === 'closed') return '주문이 마감됐어요';
+    if (m === 'timeout' || m === 'network') return '연결을 확인해 주세요';
+    return m && m.length < 40 ? m : '저장하지 못했어요';
+  }
+
+  /* ── 쓰기 — 즉시 반영하고 뒤에서 실제 저장소와 맞춥니다 ─── */
+  var syncTimer = null;
+
+  function syncAfterWrite(delay) {
+    if (!S.sheetUrl) return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(function () {
+      if (S.streamOn) return;                 /* 실시간이 붙어 있으면 이미 최신 */
+      var before = S.data ? JSON.stringify(S.data) : '';
+      backendLoad().then(function () {
+        if (S.data && JSON.stringify(S.data) !== before) render();
+      }).catch(function () {});
+    }, delay == null ? 300 : delay);
+  }
+
+  function mutate(action, p, btn, opts) {
+    opts = opts || {};
     if (S.busy) return Promise.resolve(null);
     S.busy = true;
-    return api(action, p).then(function (res) {
-      if (res && res.ok === false) throw new Error(res.error || 'error');
+
+    var snapshot = S.data ? clone(S.data) : null;
+    var hit = btn || S.lastBtn;
+    var act = hit && hit.getAttribute ? hit.getAttribute('data-act') : '';
+    var live = !!S.sheetUrl;
+
+    /* 1) 시트 모드만 미리 반영(낙관적). 로컬 모드는 바로 저장되므로 두 번 적용하지 않는다 */
+    if (live) {
+      var localRes;
+      try { localRes = localDo(action, p); }
+      catch (e) { localRes = { ok: false, error: String((e && e.message) || e) }; }
+      if (!localRes || localRes.ok === false) {
+        S.busy = false;
+        toast(errorText(localRes && localRes.error));
+        if (opts.onError) opts.onError(localRes && localRes.error); else render();
+        return Promise.resolve(null);
+      }
+      saveLocal();
+    }
+
+    /* 2) 버튼에 '저장 중…' — 다시 그린 화면에서 같은 버튼을 찾아 표시 */
+    if (!opts.deferRender) {
+      render();
+      if (live && !document.body.contains(hit)) hit = sameButton(hit, act);
+    }
+    var restore = setBtnBusy(hit, '저장 중…');
+
+    /* 3) 서버에 보내고, 결과가 오면 뒤에서 최신 시트와 맞춘다 */
+    return api(action, p, snapshot).then(function (res) {
+      if (!res || res.ok === false) throw new Error((res && res.error) || 'error');
+      if (live) syncAfterWrite(res.optimistic ? 700 : 200);
       return res;
     }).catch(function (e) {
       var m = String((e && e.message) || e);
-      if (m === 'closed') toast('주문이 마감됐어요');
-      else if (m === 'timeout' || m === 'network') toast('연결을 확인해 주세요');
-      else toast(m && m.length < 40 ? m : '저장하지 못했어요');
+      if (snapshot) { S.data = snapshot; saveLocal(); }
+      toast(errorText(m));
+      if (opts.onError) opts.onError(m); else render();
       return null;
     }).then(function (res) {
+      if (res && !live && !opts.deferRender) render();
       S.busy = false;
-      render();
+      restore();
       return res;
     });
   }
@@ -412,9 +835,10 @@
   function render() {
     var app = $('app');
     if (!S.data) {
+      /* 첫 방문(저장분 없음) — 빈 화면 대신 무엇을 기다리는지 보여 줍니다 */
       app.className = 'app';
       $('topbar').innerHTML = '<div class="topbar-title"><span class="mark">☕</span>단체 음료 주문</div>';
-      $('main').innerHTML = '<div class="card"><div class="empty"><span class="e-ic">⏳</span>불러오는 중…</div></div>';
+      $('main').innerHTML = skeletonHTML();
       return;
     }
     app.className = 'app' + (S.mode === 'admin' ? ' is-admin' : '');
@@ -422,12 +846,25 @@
     $('main').innerHTML = S.mode === 'admin' ? adminHTML() : userHTML();
   }
 
+  function skeletonHTML() {
+    var chips = '';
+    for (var i = 0; i < 6; i++) chips += '<div class="sk-chip"></div>';
+    return '<div class="banner sk-banner">' +
+        '<div class="banner-body"><div class="sk-line w60"></div><div class="sk-line w40"></div></div>' +
+        '<div class="sk-pill"></div>' +
+      '</div>' +
+      '<div class="sk-line w40 tall"></div>' +
+      '<div class="sk-line w80"></div>' +
+      '<div class="name-grid" style="margin-top:16px">' + chips + '</div>' +
+      '<p class="sk-note">명단 불러오는 중…</p>';
+  }
+
   function topbarHTML() {
     if (S.mode === 'admin') {
       return '<div class="topbar-title"><span class="mark">☕</span>단체 음료 주문' +
         '<span class="topbar-tag">관리자</span></div>' +
         '<div class="topbar-actions">' +
-          '<button class="tbtn" data-act="reload" title="시트에서 새로 불러오기">⟳</button>' +
+          '<button class="tbtn" data-act="reload" title="새로 불러오기">⟳</button>' +
           '<button class="tbtn" data-act="to-user">참여자 화면</button>' +
         '</div>';
     }
@@ -452,15 +889,13 @@
   }
 
   function pickHTML() {
-    var c = cfg();
     return bannerHTML() +
       '<div class="stepline"><span class="stepnum">1 / 3</span></div>' +
       '<h1 class="h1">내 이름을 골라 주세요</h1>' +
-      '<p class="sub">이름을 누르면 바로 주문할 수 있어요. 비밀번호는 없어요.</p>' +
+      '<p class="sub">이름을 누르면 바로 주문할 수 있어요.</p>' +
       '<div class="input-wrap"><span class="ic">🔍</span>' +
         '<input id="name-search" class="input" type="search" placeholder="이름 검색" autocomplete="off" value="' + esc(S.nq) + '"></div>' +
-      '<div id="name-grid-wrap" style="margin-top:12px">' + namesHTML() + '</div>' +
-      (c.roster.length ? '<p class="sub" style="margin:14px 2px 0;font-size:12.5px">이미 주문한 사람은 <b>✓ 선택 완료</b>로 보여요. 다시 눌러 바꿀 수 있어요.</p>' : '');
+      '<div id="name-grid-wrap" style="margin-top:12px">' + namesHTML() + '</div>';
   }
 
   function namesHTML() {
@@ -495,13 +930,7 @@
       '<div class="input-wrap"><span class="ic">🔍</span>' +
         '<input id="menu-search" class="input" type="search" placeholder="메뉴 검색 (예: 아메리카노)" autocomplete="off" value="' + esc(S.mq) + '"></div>' +
       catTabsHTML(menu) +
-      '<div id="menu-list-wrap">' + menuListHTML(menu) + '</div>' +
-      '<button class="direct" data-act="direct">' +
-        '<span class="di-ic">✏️</span>' +
-        '<span class="mi-body"><span class="di-name">직접 입력</span>' +
-          '<span class="di-sub">메뉴판에 없는 메뉴도 괜찮아요</span></span>' +
-        '<span class="chev">›</span>' +
-      '</button>';
+      '<div id="menu-list-wrap">' + menuListHTML(menu) + '</div>';
   }
 
   function catTabsHTML(menu) {
@@ -525,7 +954,7 @@
     if (!items.length) {
       return '<div class="menu-list"><div class="empty"><span class="e-ic">🔎</span>' +
         (S.cat === 'pop' ? '인기 메뉴가 아직 없어요' : '찾는 메뉴가 없어요') +
-        '<div class="sub" style="margin-top:6px">아래 <b>✏️ 직접 입력</b>으로 적어 주세요.</div></div></div>';
+        '<div class="sub" style="margin-top:6px">다른 카테고리에서 찾아보거나 관리자에게 메뉴 추가를 부탁해 주세요.</div></div></div>';
     }
     return '<div class="menu-list">' + items.map(function (it) {
       return '<button class="menu-item" data-act="choose" data-id="' + esc(it.id) + '">' +
@@ -550,13 +979,12 @@
     return '<div class="stepline"><button class="back" data-act="back" aria-label="뒤로">‹</button>' +
       '<span class="stepnum">3 / 3</span></div>' +
       '<h1 class="h1">이렇게 등록할까요?</h1>' +
-      '<p class="sub">' + esc(S.u.name) + '님 주문이에요. 마지막으로 한 번만 확인해 주세요.</p>' +
+      '<p class="sub">' + esc(S.u.name) + '님 주문이에요.</p>' +
       '<div class="card"><div class="summary">' +
         '<div class="row"><span class="k">이름</span><span class="v">' + esc(S.u.name) + '</span></div>' +
         '<div class="divider"></div>' +
         '<div class="row"><span class="k">메뉴</span><span class="v big">' + esc(d.menu || '') + '</span></div>' +
         '<div class="row"><span class="k">온도</span><span class="v">' + esc(d.temp || '—') + '</span></div>' +
-        '<div class="row"><span class="k">요청사항</span><span class="v">' + esc(d.note || '없음') + '</span></div>' +
       '</div></div>' +
       '<div class="stack" style="margin-top:16px">' +
         '<button class="btn" data-act="submit">주문 등록</button>' +
@@ -567,12 +995,10 @@
   function doneHTML() {
     var d = S.u.draft || {};
     return '<div class="done-hero"><span class="done-check">✓</span>' +
-        '<h1 class="h1">' + esc(S.u.name) + '님 주문이 등록됐어요</h1>' +
-        '<p class="sub">관리자가 확인하면 준비를 시작해요.</p></div>' +
+        '<h1 class="h1">' + esc(S.u.name) + '님 주문이 등록됐어요</h1></div>' +
       '<div class="card"><div class="summary">' +
         '<div class="row"><span class="k">메뉴</span><span class="v big">' + esc(d.menu || '') + '</span></div>' +
         '<div class="row"><span class="k">온도</span><span class="v">' + esc(d.temp || '—') + '</span></div>' +
-        '<div class="row"><span class="k">요청사항</span><span class="v">' + esc(d.note || '없음') + '</span></div>' +
       '</div></div>' +
       '<div class="stack" style="margin-top:16px">' +
         '<button class="btn ghost" data-act="edit-again">내 주문 바꾸기</button>' +
@@ -676,7 +1102,6 @@
       '<div class="card">' +
         '<textarea id="roster-bulk" class="input plain" placeholder="이름을 줄바꿈 또는 쉼표로 구분해 붙여넣으세요&#10;예) 가람, 나래, 다온&#10;또는 한 줄에 한 명씩"></textarea>' +
         '<button class="btn" style="margin-top:10px" data-act="bulk-roster">명단에 추가</button>' +
-        '<p class="sub" style="margin:10px 2px 0;font-size:12px">이미 있는 이름은 중복으로 들어가지 않아요. 줄바꿈·쉼표·탭 모두 구분자로 인식해요.</p>' +
       '</div>';
   }
 
@@ -747,7 +1172,7 @@
 
   function roundHTML() {
     var c = cfg();
-    var hist = (S.data.history || []).slice(0, 5);
+    var hist = (S.data.history || []).slice(0, 10);
     return '<div class="card">' +
         '<div class="kv"><span class="k">현재 회차</span><span class="v">' + esc(c.roundName) + '</span></div>' +
         '<div class="kv"><span class="k">상태</span><span class="v">' + (c.status === 'open' ? '주문 받는 중' : '마감됨') + '</span></div>' +
@@ -766,37 +1191,39 @@
       '</div></div>' +
       '<div class="sec-title">주문 상태</div>' +
       '<div class="card">' +
-        '<button class="btn ' + (c.status === 'open' ? 'ghost' : '') + '" data-act="toggle-status">' +
+        /* 열려 있을 때는 강조(파란색) — 누르면 마감. 마감 뒤에는 회색 */
+        '<button class="btn' + (c.status === 'open' ? '' : ' ghost') + '" data-act="toggle-status">' +
           (c.status === 'open' ? '주문 마감하기' : '다시 주문 받기') + '</button>' +
       '</div>' +
       '<div class="sec-title">새 주문 열기</div>' +
       '<div class="card">' +
         '<button class="btn" data-act="new-round">＋ 새 주문 열기 (라운드 전환)</button>' +
-        '<p class="sub" style="margin:10px 2px 0;font-size:12px">지금 주문 ' + orders().length + '건은 시트 <b>History</b>에 보관하고 현재 주문판만 비워요. 참여자 링크는 그대로 쓸 수 있어요.</p>' +
+        '<p class="sub" style="margin:10px 2px 0;font-size:12px">지금 주문 ' + orders().length + '건은 <b>History</b>로 옮겨요.</p>' +
       '</div>' +
       '<div class="sec-title">링크</div>' +
       '<div class="card"><div class="stack">' +
         '<button class="btn" data-act="copy-user-link">🔗 참여자 링크 복사</button>' +
         '<button class="btn ghost" data-act="copy-admin-link">🔐 관리자 링크 복사</button>' +
-        '<p class="sub" style="margin:2px 2px 0;font-size:12px">참여자 링크에는 관리자 표시가 들어가지 않아요.</p>' +
       '</div></div>' +
-      '<div class="sec-title">시트 연결 (선택)</div>' +
+      '<div class="sec-title">저장 연결 (선택)</div>' +
       '<div class="card">' +
         (S.sheetUrl
-          ? '<div class="kv"><span class="k">연결됨</span><span class="v" style="color:#00B26B">구글 시트</span></div>' +
-            '<button class="btn ghost" style="margin-top:10px" data-act="disconnect">연결 해제</button>'
-          : '<div class="note-card warn">아직 연결하지 않았어요. 지금은 이 브라우저에만 저장돼요.<br>시트를 연결하면 여러 명이 동시에 주문해도 한 곳에 모여요.</div>' +
-            '<input id="sheet-url" class="input plain" style="margin-top:10px" placeholder="https://script.google.com/macros/s/.../exec">' +
-            '<button class="btn" style="margin-top:10px" data-act="connect">시트 연결</button>') +
+          ? '<div class="kv"><span class="k">상태</span><span class="v" style="color:#00B26B">' +
+              (S.fbMode ? '✓ 실시간 연결됨' : '✓ 구글 시트 연결됨') + '</span></div>'
+          : '<div class="note-card warn">아직 연결하지 않았어요. 지금은 이 브라우저에만 저장돼요.</div>' +
+            '<input id="sheet-url" class="input plain" style="margin-top:10px" placeholder="https://….firebasedatabase.app/ch/…">' +
+            '<button class="btn" style="margin-top:10px" data-act="connect">연결</button>') +
       '</div>' +
       '<div class="sec-title">지난 회차</div>' +
       '<div class="card card-tight">' +
         (hist.length ? hist.map(function (h) {
           return '<div class="person"><div class="p-body"><div class="p-name">' + esc(h.roundName) + '</div>' +
             '<div class="p-menu">' + esc(brandName(h.brand)) + ' · ' + (h.total || 0) + '건</div></div>' +
-            '<div class="p-tools"><button class="btn xs" data-act="copy-history" data-i="' + esc(h.roundId) + '">주문서</button></div></div>';
+            '<div class="p-tools"><button class="btn xs" data-act="copy-history" data-i="' + esc(h.roundId) + '">주문서</button>' +
+              '<button class="btn xs danger" data-act="delete-history" data-i="' + esc(h.roundId) + '">삭제</button></div></div>';
         }).join('') : '<div class="empty" style="padding:10px">아직 지난 회차가 없어요</div>') +
-      '</div>';
+      '</div>' +
+      '<p class="sub" style="margin:18px 2px 0;font-size:11.5px;color:#B0B8C1">앱 버전 ' + APP_VERSION + '</p>';
   }
 
   /* ── 하단 시트 ────────────────────────────────────────── */
@@ -848,15 +1275,12 @@
     }
   }
 
-  var NOTE_CHIPS = ['덜 달게', '샷 추가', '얼음 적게', '시럽 빼기', '휘핑 빼기', '두유로 변경'];
-
   function openOptions(item) {
     var temp = item.temp === 'both'
       ? (localStorage.getItem(LS_LASTTEMP) || 'ICE')
       : (item.temp === 'hot' ? 'HOT' : 'ICE');
     S.pickItem = item;
     S.pickTemp = temp;
-    S.pickChips = [];
     var seg = item.temp === 'both'
       ? '<div class="seg">' +
           '<button data-act="set-temp" data-temp="HOT" class="' + (temp === 'HOT' ? 'on hot' : '') + '">HOT</button>' +
@@ -868,13 +1292,6 @@
     openSheet('<div class="item-hero"><div class="ih-cat">' + esc(catName(item.cat)) + '</div>' +
       '<div class="ih-name">' + esc(item.name) + '</div></div>' +
       '<div class="field"><label>온도</label>' + seg + '</div>' +
-      '<div class="field"><label>요청사항 (선택)</label>' +
-        '<div class="cnote-chips">' + NOTE_CHIPS.map(function (c) {
-          return '<button class="cnote" data-act="chip" data-chip="' + esc(c) + '">' + esc(c) + '</button>';
-        }).join('') + '</div>' +
-      '</div>' +
-      '<div class="field"><label>직접 적기</label>' +
-        '<input id="pick-note" class="input plain" placeholder="예: 얼음은 조금만" maxlength="60"></div>' +
       '<div class="sheet-actions"><button class="btn ghost" data-act="sheet-close">취소</button>' +
       '<button class="btn" data-act="pick-save">이걸로 할게요</button></div>');
   }
@@ -883,23 +1300,6 @@
     var menu = resolvedMenu(cfg().brand);
     for (var i = 0; i < menu.cats.length; i++) if (menu.cats[i].id === id) return menu.cats[i].name;
     return '메뉴';
-  }
-
-  function openDirect() {
-    var temp = localStorage.getItem(LS_LASTTEMP) || 'ICE';
-    S.pickItem = null;
-    S.pickTemp = temp;
-    openSheet(sheetTitle('직접 입력', '메뉴판에 없는 메뉴를 적어 주세요.') +
-      '<div class="field"><label>메뉴 이름</label>' +
-        '<input id="direct-name" class="input plain" placeholder="예: 딸기 스무디 (Large)" maxlength="40"></div>' +
-      '<div class="field"><label>온도</label><div class="seg">' +
-        '<button data-act="set-temp" data-temp="HOT" class="' + (temp === 'HOT' ? 'on hot' : '') + '">HOT</button>' +
-        '<button data-act="set-temp" data-temp="ICE" class="' + (temp === 'ICE' ? 'on ice' : '') + '">ICE</button>' +
-      '</div></div>' +
-      '<div class="field"><label>요청사항 (선택)</label>' +
-        '<input id="direct-note" class="input plain" placeholder="예: 텀블러에 담아 주세요" maxlength="60"></div>' +
-      '<div class="sheet-actions"><button class="btn ghost" data-act="sheet-close">취소</button>' +
-      '<button class="btn" data-act="direct-save">이걸로 할게요</button></div>');
   }
 
   function openAdminEdit(name) {
@@ -960,13 +1360,6 @@
     openOptions(item);
   }
 
-  function collectNote(chips, text) {
-    var parts = (chips || []).slice();
-    var t = String(text || '').trim();
-    if (t) parts.push(t);
-    return parts.join(', ').slice(0, 100);
-  }
-
   function saveDraft(draft) {
     S.u.draft = draft;
     S.u.step = 'confirm';
@@ -974,17 +1367,29 @@
     render();
   }
 
-  function doSubmit() {
+  /* 등록 — 화면은 바로 '등록됐어요'로 넘기고, 서버 응답이 실패하면 되돌립니다 */
+  function doSubmit(btn) {
     var d = S.u.draft;
-    if (!d) return;
+    if (!d || S.busy) return;
     if (cfg().status !== 'open') { toast('주문이 마감됐어요'); openClosedBlocked(S.u.name, orderOf(S.u.name)); return; }
-    var btn = document.querySelector('[data-act="submit"]');
-    if (btn) { btn.disabled = true; btn.textContent = '등록 중…'; }
-    mutate('submit', { name: S.u.name, menu: d.menu, temp: d.temp, note: d.note }).then(function (res) {
-      if (!res) { if (btn) { btn.disabled = false; btn.textContent = '주문 등록'; } return; }
+    var who = S.u.name;
+    var draft = d;
+    mutate('submit', { name: who, menu: d.menu, temp: d.temp, note: '' }, btn, {
+      deferRender: true,
+      onError: function (err) {
+        if (S.u.name !== who || S.u.step !== 'done') return;   /* 이미 다음 단계로 갔으면 건드리지 않음 */
+        S.u.step = 'confirm';
+        S.u.draft = draft;
+        render();
+        if (String(err) === 'closed') openClosedBlocked(who, orderOf(who));
+      }
+    }).then(function (res) {
+      if (!res) return;
       S.u.step = 'done';
       render();
     });
+    S.u.step = 'done';
+    render();
   }
 
   function goBack() {
@@ -1073,12 +1478,6 @@
     }
   }
 
-  function toggleChip(btn, chip) {
-    var i = S.pickChips.indexOf(chip);
-    if (i >= 0) { S.pickChips.splice(i, 1); btn.classList.remove('on'); }
-    else { S.pickChips.push(chip); btn.classList.add('on'); }
-  }
-
   function saveMenuOv(brand, ov) {
     return mutate('menus', { brand: brand, ov: ov });
   }
@@ -1098,6 +1497,7 @@
     if (!t) return;
     var act = t.getAttribute('data-act');
     var name = t.getAttribute('data-name');
+    S.lastBtn = t;                 /* 저장 중… 표시를 위해 방금 누른 버튼을 기억 */
 
     switch (act) {
       /* 시트 닫기 */
@@ -1124,23 +1524,12 @@
         break;
       }
       case 'choose': chooseItem(t.getAttribute('data-id')); break;
-      case 'direct': openDirect(); break;
       case 'set-temp': setTemp(t.getAttribute('data-temp')); break;
-      case 'chip': toggleChip(t, t.getAttribute('data-chip')); break;
       case 'pick-save': {
-        var noteEl = $('pick-note');
-        var note = collectNote(S.pickChips, noteEl ? noteEl.value : '');
-        saveDraft({ menu: S.pickItem.name, temp: S.pickTemp, note: note, itemId: S.pickItem.id });
+        saveDraft({ menu: S.pickItem.name, temp: S.pickTemp, note: '', itemId: S.pickItem.id });
         break;
       }
-      case 'direct-save': {
-        var nm = ($('direct-name') && $('direct-name').value || '').trim();
-        if (!nm) { toast('메뉴 이름을 적어 주세요'); break; }
-        var dnote = ($('direct-note') && $('direct-note').value || '').trim();
-        saveDraft({ menu: nm, temp: S.pickTemp, note: dnote.slice(0, 100), itemId: '', direct: true });
-        break;
-      }
-      case 'submit': doSubmit(); break;
+      case 'submit': doSubmit(t); break;
       case 'edit-again': S.u.step = 'menu'; render(); break;
       case 'reset': resetFlow(); break;
 
@@ -1338,33 +1727,48 @@
         });
         break;
       }
-      case 'copy-user-link': copyText(participantLink(), '참여자 링크를 복사했어요'); break;
-      case 'copy-admin-link': copyText(adminLink(), '관리자 링크를 복사했어요 — 따로 보관하세요'); break;
-      case 'connect': {
-        var url = ($('sheet-url') && $('sheet-url').value || '').trim();
-        if (!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec/.test(url)) {
-          toast('웹앱 주소(…/exec)를 확인해 주세요');
-          break;
-        }
-        S.sheetUrl = url;
-        localStorage.setItem(LS_SHEET, url);
-        sheetLoad().then(function () {
-          S.mode = 'admin';
-          render();
-          toast('시트에 연결했어요');
-        }).catch(function () {
-          toast('불러오지 못했어요 — 주소와 배포 권한을 확인해 주세요');
-        });
+      case 'copy-user-link': {
+        /* 바로 복사하지 않고, 어느 회차 링크인지 보여 주며 한 번 확인 */
+        var cur = cfg();
+        askConfirm('이 회차의 참여자 링크를 복사하시겠습니까?',
+          cur.roundName + ' · ' + brandName(cur.brand) +
+            (S.sheetUrl ? '' : '\n(아직 저장 연결 전이라 이 기기에만 저장돼요.)'),
+          '링크 복사', function () {
+            copyText(participantLink(), '참여자 링크를 복사했어요');
+          });
         break;
       }
-      case 'disconnect': {
-        askConfirm('시트 연결을 해제할까요?', '이 브라우저에 있는 데이터는 그대로 남아 있어요.', '연결 해제', function () {
-          S.sheetUrl = '';
-          S.connected = false;
-          localStorage.removeItem(LS_SHEET);
-          if (location.hash.indexOf('#s=') >= 0) history.replaceState(null, '', location.pathname + location.search);
+      case 'copy-admin-link': copyText(adminLink(), '관리자 링크를 복사했어요 — 따로 보관하세요'); break;
+      case 'delete-history': {
+        var hid = t.getAttribute('data-i');
+        var hh = (S.data.history || []).filter(function (x) { return x.roundId === hid; })[0];
+        if (!hh) break;
+        askConfirm('이 지난 회차를 삭제할까요?',
+          '「' + hh.roundName + '」 · ' + (hh.total || 0) + '건\n지우면 주문서를 다시 볼 수 없어요.',
+          '삭제', function () {
+            mutate('deleteHistory', { roundId: hid }).then(function (res) {
+              if (res) toast('지난 회차를 지웠어요');
+            });
+          }, true);
+        break;
+      }
+      case 'connect': {
+        var url = ($('sheet-url') && $('sheet-url').value || '').trim().replace(/\/+$/, '');
+        if (!isFbUrl(url) && !/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec/.test(url)) {
+          toast('실시간 DB 주소나 웹앱 주소(…/exec)를 확인해 주세요');
+          break;
+        }
+        if (S.es) { try { S.es.close(); } catch (e) {} S.es = null; S.streamOn = false; }
+        S.sheetUrl = url;
+        S.fbMode = isFbUrl(url);
+        localStorage.setItem(LS_SHEET, url);
+        backendLoad().then(function () {
+          S.mode = 'admin';
           render();
-        }, true);
+          toast(S.fbMode ? '실시간 DB에 연결했어요' : '시트에 연결했어요');
+        }).catch(function () {
+          toast('불러오지 못했어요 — 주소와 권한을 확인해 주세요');
+        });
         break;
       }
     }
@@ -1429,9 +1833,9 @@
 
   function refresh(silent) {
     if (!S.sheetUrl) { render(); if (silent) toast('최신 상태로 다시 그렸어요'); return Promise.resolve(); }
-    return sheetLoad().then(function () {
+    return backendLoad().then(function () {
       render();
-      if (!silent) toast('시트에서 불러왔어요');
+      if (!silent) toast('최신 상태로 불려왔어요');
       return true;
     }).catch(function () {
       if (!silent) toast('불러오지 못했어요');
@@ -1443,25 +1847,35 @@
     var p = readParams();
     var stored = '';
     try { stored = localStorage.getItem(LS_SHEET) || ''; } catch (e) {}
-    S.sheetUrl = p.s || stored || '';
-    if (p.s) { try { localStorage.setItem(LS_SHEET, p.s); } catch (e) {} }
+    S.sheetUrl = String(p.s || stored || '').trim();
+    if (S.sheetUrl) { try { localStorage.setItem(LS_SHEET, S.sheetUrl); } catch (e) {} }
     S.mode = (p.admin === '1' || p.admin === 'true') ? 'admin' : 'user';
+    S.fbMode = isFbUrl(S.sheetUrl);
 
+    /* 저장분(캐시)이 있으면 연결을 기다리지 않고 바로 그립니다 */
     var local = readLocal();
-    S.data = local || blankData();
-    if (!local) saveLocal();
-    S.editorBrand = S.data.config.brand;
+    S.data = local || null;
+    S.cached = !!local;
+    if (local) S.editorBrand = local.config.brand;
+
+    if (!S.sheetUrl && !S.data) {
+      /* 처음 쓰는 로컬 모드 — 빈 앱장은 즉시 */
+      S.data = blankData();
+      saveLocal();
+      S.editorBrand = S.data.config.brand;
+    }
+
+    render();
 
     if (S.sheetUrl) {
-      render();
-      sheetLoad().then(function () {
+      backendLoad().then(function () {
+        S.editorBrand = S.editorBrand || S.data.config.brand;
         render();
       }).catch(function () {
-        toast('시트에 연결하지 못했어요 — 이 브라우저 저장분으로 보여 드려요');
+        if (!S.data) { S.data = blankData(); saveLocal(); S.editorBrand = S.data.config.brand; }
+        toast('연결하지 못했어요 — 이 브라우저 저장분으로 보여 드려요');
         render();
       });
-    } else {
-      render();
     }
 
     if ('serviceWorker' in navigator && location.protocol.indexOf('http') === 0) {
@@ -1475,6 +1889,7 @@
   window.COApp = {
     version: APP_VERSION,
     get state() { return S; },
+    get storage() { return S.fbMode ? 'firebase' : (S.sheetUrl ? 'script' : 'local'); },
     computeStats: computeStats,
     aggregate: aggregate,
     orderText: orderText,
@@ -1482,7 +1897,9 @@
     participantLink: participantLink,
     adminLink: adminLink,
     orderOf: orderOf,
-    refresh: refresh
+    refresh: refresh,
+    safeKey: safeKey,
+    applyPatch: applyPatch
   };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
