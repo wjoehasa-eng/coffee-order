@@ -14,6 +14,10 @@
   var APP_VERSION = '1.1.0';
   var LS_DATA = 'coffee-order-v1';
   var LS_SHEET = 'coffee-order-sheet';
+  var LS_ADMIN = 'coffee-order-admin';
+  function isRememberedAdmin() {
+    try { return localStorage.getItem(LS_ADMIN) === '1'; } catch (e) { return false; }
+  }
   var LS_SRC = 'coffee-order-src';       /* 저장분이 어느 채널의 것인지 */
   var LS_LASTTEMP = 'coffee-order-lasttemp';
 
@@ -590,7 +594,7 @@
           if (!n || n.length > 20 || seen[n]) return false;
           seen[n] = 1; return true;
         });
-      if (!clean.length && (c.roster || []).length) {
+      if (!clean.length && (c.roster || []).length && !p.force) {
         return Promise.resolve({ ok: false, error: '빈 명단으로 덮어쓰기를 차단했습니다.' });
       }
       return fbReq('PUT', 'config/roster.json', clean).then(function () {
@@ -891,6 +895,7 @@
     }
     return '<div class="topbar-title"><span class="mark">☕</span>단체 음료 주문</div>' +
       '<div class="topbar-actions">' +
+        (isRememberedAdmin() ? '<button class="tbtn" data-act="to-admin">관리자</button>' : '') +
         '<button class="tbtn" data-act="reload" title="새로고침">⟳ 새로고침</button>' +
       '</div>';
   }
@@ -1473,7 +1478,7 @@
 
   function removeRoster(n) {
     var rest = cfg().roster.filter(function (x) { return x !== n; });
-    mutate('roster', { roster: rest }).then(function (res) {
+    mutate('roster', { roster: rest, force: !rest.length }).then(function (res) {
       if (res) toast(n + '님을 명단에서 뺐어요');
     });
   }
@@ -1560,6 +1565,12 @@
         S.mode = 'user';
         S.u = { step: 'pick', name: '', draft: null };
         try { history.replaceState(null, '', participantLink()); } catch (e) {}
+        render();
+        break;
+      }
+      case 'to-admin': {
+        S.mode = 'admin';
+        try { history.replaceState(null, '', adminLink()); } catch (e) {}
         render();
         break;
       }
@@ -1870,7 +1881,12 @@
     try { stored = localStorage.getItem(LS_SHEET) || ''; } catch (e) {}
     S.sheetUrl = String(p.s || stored || '').trim();
     if (S.sheetUrl) { try { localStorage.setItem(LS_SHEET, S.sheetUrl); } catch (e) {} }
-    S.mode = (p.admin === '1' || p.admin === 'true') ? 'admin' : 'user';
+    if (p.admin === '1' || p.admin === 'true') {
+      try { localStorage.setItem(LS_ADMIN, '1'); } catch (e) {}
+    }
+    S.mode = (p.admin === '1' || p.admin === 'true')
+      ? 'admin'
+      : ((p.admin === '0' || p.admin === 'false') ? 'user' : (isRememberedAdmin() ? 'admin' : 'user'));
     S.fbMode = isFbUrl(S.sheetUrl);
 
     /* 저장분(캐시)이 있으면 연결을 기다리지 않고 바로 그립니다 */
