@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>단체 음료 주문</title>
+<meta name="description" content="학교·팀 회의 음료 주문을 이름 선택 → 메뉴 선택 3단계로 오류 없이 취합합니다.">
+<meta name="theme-color" content="#F2F4F6">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="음료 주문">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app" class="app">
+    <header id="topbar" class="topbar"></header>
+    <main id="main" class="main" role="main"></main>
+  </div>
+
+  <div id="sheet" class="sheet-wrap" hidden>
+    <div class="sheet-backdrop" data-act="sheet-close"></div>
+    <section id="sheet-body" class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title"></section>
+  </div>
+
+  <div id="toast" class="toast" hidden role="status" aria-live="polite"></div>
+
+  <script src="menus.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
