@@ -1884,9 +1884,7 @@
     if (window.__COFFEE_ADMIN_ENTRY || p.admin === '1' || p.admin === 'true') {
       try { localStorage.setItem(LS_ADMIN, '1'); } catch (e) {}
     }
-    S.mode = (window.__COFFEE_ADMIN_ENTRY || p.admin === '1' || p.admin === 'true')
-      ? 'admin'
-      : ((p.admin === '0' || p.admin === 'false') ? 'user' : (isRememberedAdmin() ? 'admin' : 'user'));
+    S.mode = (window.__COFFEE_ADMIN_ENTRY || p.admin === '1' || p.admin === 'true') ? 'admin' : 'user';
     S.fbMode = isFbUrl(S.sheetUrl);
 
     /* 저장분(캐시)이 있으면 연결을 기다리지 않고 바로 그립니다 */
