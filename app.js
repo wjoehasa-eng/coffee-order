@@ -14,10 +14,6 @@
   var APP_VERSION = '1.1.0';
   var LS_DATA = 'coffee-order-v1';
   var LS_SHEET = 'coffee-order-sheet';
-  var LS_ADMIN = 'coffee-order-admin';
-  function isRememberedAdmin() {
-    try { return localStorage.getItem(LS_ADMIN) === '1'; } catch (e) { return false; }
-  }
   var LS_SRC = 'coffee-order-src';       /* 저장분이 어느 채널의 것인지 */
   var LS_LASTTEMP = 'coffee-order-lasttemp';
 
@@ -895,7 +891,6 @@
     }
     return '<div class="topbar-title"><span class="mark">☕</span>단체 음료 주문</div>' +
       '<div class="topbar-actions">' +
-        (isRememberedAdmin() ? '<button class="tbtn" data-act="to-admin">관리자</button>' : '') +
         '<button class="tbtn" data-act="reload" title="새로고침">⟳ 새로고침</button>' +
       '</div>';
   }
@@ -1881,9 +1876,6 @@
     try { stored = localStorage.getItem(LS_SHEET) || ''; } catch (e) {}
     S.sheetUrl = String(p.s || stored || '').trim();
     if (S.sheetUrl) { try { localStorage.setItem(LS_SHEET, S.sheetUrl); } catch (e) {} }
-    if (window.__COFFEE_ADMIN_ENTRY || p.admin === '1' || p.admin === 'true') {
-      try { localStorage.setItem(LS_ADMIN, '1'); } catch (e) {}
-    }
     S.mode = (window.__COFFEE_ADMIN_ENTRY || p.admin === '1' || p.admin === 'true') ? 'admin' : 'user';
     S.fbMode = isFbUrl(S.sheetUrl);
 
