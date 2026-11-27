@@ -1257,12 +1257,7 @@
       '</div>' +
       '<div class="sec-title">링크</div>' +
       '<div class="card"><div class="stack">' +
-        '<div>' +
-          '<div class="sub" style="margin:0 0 6px;font-size:12.5px">함께 보낼 문구 (비워두면 링크만 복사)</div>' +
-          '<input id="share-msg" class="input plain" placeholder="예: ☕ 오늘 음료 골라 주세요!" value="' +
-            esc(S.shareMsg != null ? S.shareMsg : ('☕ ' + c.roundName + ' 골라 주세요!')) + '">' +
-        '</div>' +
-        '<button class="btn" data-act="copy-user-link">🔗 문구 + 참여자 링크 복사</button>' +
+        '<button class="btn" data-act="copy-user-link">🔗 참여자 링크 복사</button>' +
         '<button class="btn ghost" data-act="copy-admin-link">🔐 관리자 링크 복사</button>' +
       '</div></div>' +
       '<div class="sec-title">저장 연결 (선택)</div>' +
@@ -1823,15 +1818,11 @@
       case 'copy-user-link': {
         /* 바로 복사하지 않고, 어느 회차 링크인지 보여 주며 한 번 확인 */
         var cur = cfg();
-        var msg = ($('share-msg') ? $('share-msg').value : (S.shareMsg || '')).trim();
-        S.shareMsg = msg;
-        var payload = msg ? (msg + '\n' + participantLink()) : participantLink();
         askConfirm('이 회차의 참여자 링크를 복사하시겠습니까?',
           cur.roundName + ' · ' + brandName(cur.brand) +
-            (msg ? '\n문구: "' + msg + '"' : '\n(문구 없이 링크만 복사)') +
             (S.sheetUrl ? '' : '\n(아직 저장 연결 전이라 이 기기에만 저장돼요.)'),
-          '복사하기', function () {
-            copyText(payload, msg ? '문구와 참여자 링크를 복사했어요' : '참여자 링크를 복사했어요');
+          '링크 복사', function () {
+            copyText(participantLink(), '참여자 링크를 복사했어요');
           });
         break;
       }
