@@ -1609,7 +1609,16 @@
       case 'reset': resetFlow(); break;
 
       /* 공통 */
-      case 'reload': refresh(true); break;
+      case 'reload': {
+        if (navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
+          navigator.serviceWorker.getRegistration().then(function (r) {
+            if (r) return r.update().catch(function () {});
+          }).catch(function () {}).finally(function () { refresh(true); });
+        } else {
+          refresh(true);
+        }
+        break;
+      }
       case 'to-user': {
         S.mode = 'user';
         S.u = { step: 'pick', name: '', draft: null };
@@ -1959,8 +1968,16 @@
     }
 
     if ('serviceWorker' in navigator && location.protocol.indexOf('http') === 0) {
+      var reloaded = false;
+      navigator.serviceWorker.addEventListener('controllerchange', function () {
+        if (reloaded) return;
+        reloaded = true;
+        location.reload();
+      });
       window.addEventListener('load', function () {
-        navigator.serviceWorker.register('sw.js').catch(function () {});
+        navigator.serviceWorker.register('sw.js').then(function (r) {
+          if (r && r.update) r.update().catch(function () {});
+        }).catch(function () {});
       });
     }
   }
