@@ -679,6 +679,7 @@
   function errorText(m) {
     if (m === 'closed') return '주문이 마감됐어요';
     if (m === 'timeout' || m === 'network') return '연결을 확인해 주세요';
+    if (m && m.indexOf('알 수 없는 action') >= 0) return '이 연결에서는 지원하지 않는 기능이에요';
     return m && m.length < 40 ? m : '저장하지 못했어요';
   }
 
