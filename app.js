@@ -891,8 +891,9 @@
     }
     return '<div class="topbar-title"><span class="mark">☕</span>단체 음료 주문</div>' +
       '<div class="topbar-actions">' +
-        (S.canAdmin ? '<button class="tbtn" data-act="to-admin">관리자</button>' : '') +
-        '<button class="tbtn" data-act="reload" title="새로고침">⟳ 새로고침</button>' +
+        (S.canAdmin
+          ? '<button class="tbtn" data-act="reload" title="새로 불러오기">⟳</button><button class="tbtn" data-act="to-admin">관리자 화면</button>'
+          : '<button class="tbtn" data-act="reload" title="새로고침">⟳ 새로고침</button>') +
       '</div>';
   }
 
@@ -1612,13 +1613,11 @@
       case 'to-user': {
         S.mode = 'user';
         S.u = { step: 'pick', name: '', draft: null };
-        try { history.replaceState(null, '', participantLink()); } catch (e) {}
         render();
         break;
       }
       case 'to-admin': {
         S.mode = 'admin';
-        try { history.replaceState(null, '', adminLink()); } catch (e) {}
         render();
         break;
       }
