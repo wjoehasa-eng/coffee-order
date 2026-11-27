@@ -920,9 +920,15 @@
   }
 
   function manualNameCardHTML(prefill) {
+    if (!S.manualOpen) {
+      return '<button class="btn ghost" data-act="open-manual-name" style="margin-top:16px">🙋 명단에 내 이름이 없나요? 직접 입력하기</button>';
+    }
     var val = prefill ? esc(prefill) : '';
     return '<div class="card manual-name-card" style="margin-top:16px">' +
-      '<div style="font-size:16px;font-weight:700;color:var(--ink)">🙋 명단에 내 이름이 없나요?</div>' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">' +
+        '<div style="font-size:16px;font-weight:700;color:var(--ink)">🙋 직접 이름 입력하기</div>' +
+        '<button class="btn xs ghost" data-act="close-manual-name">닫기</button>' +
+      '</div>' +
       '<div class="sub" style="margin:4px 0 12px">아래에 내 이름을 직접 적고 파란 버튼을 누르면 바로 주문할 수 있어요.</div>' +
       '<div style="display:flex;gap:8px;align-items:center">' +
         '<input id="manual-name" class="input plain" type="text" maxlength="20" autocomplete="off" placeholder="이름 입력 (예: 홍길동)" value="' + val + '" style="flex:1;font-size:16px">' +
@@ -935,21 +941,29 @@
     var c = cfg();
     var q = S.nq.trim().toLowerCase();
     var rawQ = S.nq.trim();
-    if (!c.roster.length) {
-      return emptyCard('명단이 아직 없어요', '아래 칸에 내 이름을 직접 적어서 바로 주문할 수 있어요.', '📋') +
-        manualNameCardHTML(rawQ);
-    }
-    var list = c.roster.filter(function (n) { return !q || n.toLowerCase().indexOf(q) >= 0; });
-    if (!list.length) {
-      return emptyCard('명단에서 찾지 못했어요', '아래에 이름을 직접 적고 주문하기를 눌러 주세요.', '🔎') +
-        manualNameCardHTML(rawQ);
-    }
     var by = {};
-    orders().forEach(function (o) { by[o.name] = o; });
+    var extra = [];
+    var inRoster = {};
+    c.roster.forEach(function (n) { inRoster[n] = 1; });
+    orders().forEach(function (o) {
+      by[o.name] = o;
+      if (!inRoster[o.name] && extra.indexOf(o.name) < 0) extra.push(o.name);
+    });
+    var allNames = c.roster.concat(extra);
+    if (!allNames.length) {
+      return emptyCard('명단이 아직 없어요', '아래 버튼을 눌러 내 이름을 직접 적고 주문할 수 있어요.', '📋') +
+        manualNameCardHTML(rawQ);
+    }
+    var list = allNames.filter(function (n) { return !q || n.toLowerCase().indexOf(q) >= 0; });
+    if (!list.length) {
+      return emptyCard('명단에서 찾지 못했어요', '아래 버튼을 눌러 이름을 직접 적고 주문해 주세요.', '🔎') +
+        manualNameCardHTML(rawQ);
+    }
     return '<div class="name-grid">' + list.map(function (n) {
       var o = by[n];
+      var out = !inRoster[n];
       return '<button class="name-chip' + (o ? ' is-done' : '') + '" data-act="pick-name" data-name="' + esc(n) + '">' +
-        '<span class="nm">' + esc(n) + '</span>' +
+        '<span class="nm">' + esc(n) + (out ? ' <span class="tag-pop">명단 밖</span>' : '') + '</span>' +
         '<span class="st">' + (o ? '✓ 선택 완료 · ' + esc(o.menu) + (o.temp ? ' ' + o.temp : '') : '아직 선택 전') + '</span>' +
         '</button>';
     }).join('') + '</div>' + manualNameCardHTML('');
@@ -1063,10 +1077,11 @@
     var st = computeStats(c.roster, list);
     var agg = aggregate(list);
 
-    var badge1 = st.ok1
-      ? '<div class="badge"><span class="bi">✓</span><span>총원 ' + st.N + '명 = 선택 완료 ' + st.A + '명 + 미선택 ' + st.B + '명</span></div>'
-      : '<div class="badge bad"><span class="bi">⚠️</span><span>총원 ' + st.N + '명 ≠ 선택 ' + st.A + '명 + 미선택 ' + st.B + '명' +
-        '<span class="bd">' + (st.outsiders.length ? '명단에 없는 이름의 주문 ' + st.outsiders.length + '건' : '숫자가 맞지 않아요') + '</span></span></div>';
+    var badge1 = st.outsiders.length
+      ? '<div class="badge"><span class="bi">✓</span><span>명단 ' + st.N + '명 + 명단 밖 ' + st.outsiders.length + '명 · 선택 ' + st.U + '명</span></div>'
+      : (st.ok1
+        ? '<div class="badge"><span class="bi">✓</span><span>총원 ' + st.N + '명 = 선택 완료 ' + st.A + '명 + 미선택 ' + st.B + '명</span></div>'
+        : '<div class="badge bad"><span class="bi">⚠️</span><span>총원 ' + st.N + '명 ≠ 선택 ' + st.A + '명 + 미선택 ' + st.B + '명</span></div>');
     var badge2 = st.ok2
       ? '<div class="badge"><span class="bi">✓</span><span>총 주문 ' + st.totalCups + '잔 = 선택 완료 ' + st.U + '명</span></div>'
       : '<div class="badge bad"><span class="bi">⚠️</span><span>총 주문 ' + st.totalCups + '잔 ≠ 선택 완료 ' + st.U + '명' +
@@ -1100,10 +1115,7 @@
         }).join('') + '</div>'
       : '<div class="empty" style="padding:8px"><span class="e-ic">🕐</span>아직 주문이 없어요</div>';
 
-    return '<div class="card"><div class="badges">' + badge1 + badge2 + '</div>' +
-        (st.outsiders.length || st.duplicates.length
-          ? '<button class="btn ghost sm" style="width:100%;margin-top:10px" data-act="clean">명단 밖·중복 주문 정리하기</button>' : '') +
-      '</div>' +
+    return '<div class="card"><div class="badges">' + badge1 + badge2 + '</div></div>' +
       '<div class="card"><div class="stat-grid">' +
         '<div class="stat-cell"><div class="n">' + st.N + '</div><div class="l">총원</div></div>' +
         '<div class="stat-cell blue"><div class="n">' + st.U + '</div><div class="l">선택 완료</div></div>' +
@@ -1548,6 +1560,19 @@
       }
 
       /* 참여자 */
+      case 'open-manual-name': {
+        S.manualOpen = true;
+        var nw = $('name-grid-wrap');
+        if (nw) nw.innerHTML = namesHTML();
+        if ($('manual-name')) $('manual-name').focus();
+        break;
+      }
+      case 'close-manual-name': {
+        S.manualOpen = false;
+        var nw2 = $('name-grid-wrap');
+        if (nw2) nw2.innerHTML = namesHTML();
+        break;
+      }
       case 'pick-name': pickName(name); break;
       case 'pick-manual-name': {
         var mn = ($('manual-name') && $('manual-name').value || '').trim().slice(0, 20);
