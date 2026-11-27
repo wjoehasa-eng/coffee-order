@@ -891,6 +891,7 @@
     }
     return '<div class="topbar-title"><span class="mark">☕</span>단체 음료 주문</div>' +
       '<div class="topbar-actions">' +
+        (S.canAdmin ? '<button class="tbtn" data-act="to-admin">관리자</button>' : '') +
         '<button class="tbtn" data-act="reload" title="새로고침">⟳ 새로고침</button>' +
       '</div>';
   }
@@ -1928,7 +1929,8 @@
     try { stored = localStorage.getItem(LS_SHEET) || ''; } catch (e) {}
     S.sheetUrl = String(p.s || stored || '').trim();
     if (S.sheetUrl) { try { localStorage.setItem(LS_SHEET, S.sheetUrl); } catch (e) {} }
-    S.mode = (window.__COFFEE_ADMIN_ENTRY || p.admin === '1' || p.admin === 'true') ? 'admin' : 'user';
+    S.canAdmin = !!(window.__COFFEE_ADMIN_ENTRY || p.admin === '1' || p.admin === 'true');
+    S.mode = S.canAdmin ? 'admin' : 'user';
     S.fbMode = isFbUrl(S.sheetUrl);
 
     /* 저장분(캐시)이 있으면 연결을 기다리지 않고 바로 그립니다 */
