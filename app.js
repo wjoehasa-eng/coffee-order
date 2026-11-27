@@ -919,14 +919,31 @@
       '<div id="name-grid-wrap" style="margin-top:12px">' + namesHTML() + '</div>';
   }
 
+  function manualNameCardHTML(prefill) {
+    var val = prefill ? esc(prefill) : '';
+    return '<div class="card manual-name-card" style="margin-top:16px">' +
+      '<div style="font-size:16px;font-weight:700;color:var(--ink)">🙋 명단에 내 이름이 없나요?</div>' +
+      '<div class="sub" style="margin:4px 0 12px">아래에 내 이름을 직접 적고 파란 버튼을 누르면 바로 주문할 수 있어요.</div>' +
+      '<div style="display:flex;gap:8px;align-items:center">' +
+        '<input id="manual-name" class="input plain" type="text" maxlength="20" autocomplete="off" placeholder="이름 입력 (예: 홍길동)" value="' + val + '" style="flex:1;font-size:16px">' +
+        '<button class="btn" data-act="pick-manual-name" style="flex:0 0 auto;width:auto;padding:0 18px;font-size:15px">주문하기</button>' +
+      '</div>' +
+    '</div>';
+  }
+
   function namesHTML() {
     var c = cfg();
     var q = S.nq.trim().toLowerCase();
+    var rawQ = S.nq.trim();
     if (!c.roster.length) {
-      return emptyCard('명단이 아직 없어요', '관리자가 명단을 등록하면 여기에 이름이 나타나요.', '📋');
+      return emptyCard('명단이 아직 없어요', '아래 칸에 내 이름을 직접 적어서 바로 주문할 수 있어요.', '📋') +
+        manualNameCardHTML(rawQ);
     }
     var list = c.roster.filter(function (n) { return !q || n.toLowerCase().indexOf(q) >= 0; });
-    if (!list.length) return emptyCard('검색 결과가 없어요', '이름을 다시 확인해 주세요.', '🔎');
+    if (!list.length) {
+      return emptyCard('명단에서 찾지 못했어요', '아래에 이름을 직접 적고 주문하기를 눌러 주세요.', '🔎') +
+        manualNameCardHTML(rawQ);
+    }
     var by = {};
     orders().forEach(function (o) { by[o.name] = o; });
     return '<div class="name-grid">' + list.map(function (n) {
@@ -935,7 +952,7 @@
         '<span class="nm">' + esc(n) + '</span>' +
         '<span class="st">' + (o ? '✓ 선택 완료 · ' + esc(o.menu) + (o.temp ? ' ' + o.temp : '') : '아직 선택 전') + '</span>' +
         '</button>';
-    }).join('') + '</div>';
+    }).join('') + '</div>' + manualNameCardHTML('');
   }
 
   function menuHTML() {
@@ -1532,6 +1549,13 @@
 
       /* 참여자 */
       case 'pick-name': pickName(name); break;
+      case 'pick-manual-name': {
+        var mn = ($('manual-name') && $('manual-name').value || '').trim().slice(0, 20);
+        if (!mn) { toast('이름을 입력해 주세요'); if ($('manual-name')) $('manual-name').focus(); break; }
+        if (orderOf(mn)) toast(mn + '님은 이미 주문 내역이 있어 수정 화면으로 이동했어요');
+        pickName(mn);
+        break;
+      }
       case 'start-order': startOrder(name); break;
       case 'back': goBack(); break;
       case 'cat': {
