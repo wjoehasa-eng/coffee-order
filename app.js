@@ -428,9 +428,29 @@
       if (!r.ok) throw new Error('연결 실패(' + r.status + ')');
       return r.json();
     }).then(function (raw) {
+      if (!raw || !raw.config || !raw.config.roundId) return fbInit(raw);
       applyFb(raw);
       startStream();
       return raw;
+    });
+  }
+
+  /* 빈 채널이면 기본 회차를 만들어 둡니다(처음 연결한 사람이 한 번) */
+  function fbInit(raw) {
+    var base = {
+      roundId: newId(),
+      roundName: todayMD() + ' ' + COMenu.brand('compose').name,
+      brand: 'compose',
+      status: 'open',
+      roster: [],
+      updatedAt: nowISO()
+    };
+    return fbReq('PUT', 'config.json', base).then(function () {
+      var merged = (raw && typeof raw === 'object') ? raw : {};
+      merged.config = base;
+      applyFb(merged);
+      startStream();
+      return merged;
     });
   }
 
